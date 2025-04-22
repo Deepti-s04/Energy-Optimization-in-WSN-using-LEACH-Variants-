@@ -1,0 +1,91 @@
+#include "contiki.h"
+#include "net/rime/rime.h"
+#include "random.h"
+#include "broadcast.h"
+#include "powertrace.h"
+#include <stdio.h>
+#include <math.h> // For distance calculations
+
+#define CLUSTER_HEAD_PROB 10  // Probability (in percentage) to become a cluster head
+#define MAX_NODES 20          // Maximum number of nodes
+#define BROADCAST_CHANNEL 129 // Channel for broadcast communication
+#define INITIAL_ENERGY 100.0  // Initial energy (in Joules)
+#define TX_ENERGY 0.001       // Energy consumption for transmission (J/bit)
+#define RX_ENERGY 0.0005      // Energy consumption for reception (J/bit)
+
+PROCESS(leach_process, "LEACH Protocol Process");
+AUTOSTART_PROCESSES(&leach_process);
+
+static struct broadcast_conn broadcast; // Broadcast connection structure
+static float node_energy = INITIAL_ENERGY; // Node's initial energy
+static float distance_to_ch = 0.0; // Distance to cluster head
+static int is_cluster_head;
+
+// Callback function to handle broadcast reception
+static void broadcast_recv(struct broadcast_conn *c, const linkaddr_t *from) {
+  printf("Broadcast received from node %d.%d\n", from->u8[0], from->u8[1]);
+
+  // Simulate energy consumption for receiving data
+  node_energy -= RX_ENERGY;
+  printf("Node energy after receiving: %.3f J\n", node_energy);
+}
+
+// Function to calculate distance between nodes
+static float calculate_distance(int x1, int y1, int x2, int y2) {
+  return sqrt(pow(x2 - x1, 2) + pow(y2 - y1, 2));
+}
+
+static const struct broadcast_callbacks broadcast_call = {broadcast_recv};
+
+PROCESS_THREAD(leach_process, ev, data)
+{
+  static struct etimer et;
+
+  PROCESS_EXITHANDLER(broadcast_close(&broadcast);)  // Clean up broadcast connection
+  PROCESS_BEGIN();
+  powertrace_start(CLOCK_SECOND * 10);
+
+  // Open a broadcast channel
+  broadcast_open(&broadcast, BROADCAST_CHANNEL, &broadcast_call);
+
+  while (1) {
+    // Set a timer for periodic actions
+    etimer_set(&et, CLOCK_SECOND * 5);
+
+    PROCESS_WAIT_EVENT_UNTIL(etimer_expired(&et));
+
+    // Randomly decide whether to become a cluster head
+    if (random_rand() % 100 < CLUSTER_HEAD_PROB) {
+      is_cluster_head = 1;
+      printf("I am a cluster head: %d.%d\n", linkaddr_node_addr.u8[0], linkaddr_node_addr.u8[1]);
+
+      // Broadcast cluster head announcement
+      packetbuf_copyfrom("CH", 2);  // Packet content for 'Cluster Head'
+      broadcast_send(&broadcast);
+
+      // Simulate energy consumption for transmission
+      node_energy -= TX_ENERGY * 10; // Assume 10 bits of data sent
+      printf("Node energy after transmission: %.3f J\n", node_energy);
+    } else {
+      is_cluster_head = 0;
+      printf("I am a normal node: %d.%d\n", linkaddr_node_addr.u8[0], linkaddr_node_addr.u8[1]);
+
+      // Calculate distance to the cluster head (Example positions used)
+      distance_to_ch = calculate_distance(linkaddr_node_addr.u8[0], linkaddr_node_addr.u8[1], 10, 10);
+      printf("Distance to cluster head: %.2f meters\n", distance_to_ch);
+
+      // Simulate energy consumption for distance-based data transmission
+      float tx_energy = TX_ENERGY + (0.0001 * distance_to_ch); // Adjust energy consumption based on distance
+      node_energy -= tx_energy;
+      printf("Node energy after sending to CH: %.3f J\n", node_energy);
+    }
+
+    // Check if energy is depleted
+    if (node_energy <= 0) {
+      printf("Node %d.%d has depleted its energy.\n", linkaddr_node_addr.u8[0], linkaddr_node_addr.u8[1]);
+      break;
+    }
+  }
+
+  PROCESS_END();
+}
